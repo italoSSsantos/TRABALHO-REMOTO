@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Painel visual do audio - janela que mostra, ao vivo, se o microfone do
-notebook chegou no PC pela sessao RDP.
+Painel de controle do audio remoto.
 
-Rode DENTRO da sessao RDP, no PC:
+Mostra ao vivo se o microfone chegou, e tem os botoes para ligar tudo:
+conectar por RDP (em casa) ou subir o AudioLink (fora de casa).
+
     python painel.py
 """
 
 import os
 import queue
+import subprocess
+import sys
 import threading
 import tkinter as tk
 from tkinter import font as tkfont
@@ -16,18 +19,16 @@ from tkinter import font as tkfont
 import numpy as np
 import sounddevice as sd
 
+AQUI = os.path.dirname(os.path.abspath(__file__))
+ARQUIVO_RDP = os.path.join(AQUI, "PC DO TRABALHO (com microfone).rdp")
+IP_PADRAO = "192.168.0.244"
+
 MARCAS_REMOTO = ("remote audio", "audio remoto", "\xe1udio remoto", "rdp",
                  "redirecionamento de audio", "redirecionamento de \xe1udio")
 
-FUNDO   = "#15171c"
-CARTAO  = "#1e2129"
-BORDA   = "#2c303b"
-TEXTO   = "#e8eaf0"
-FRACO   = "#848b9e"
-VERDE   = "#3ddc84"
-AMARELO = "#ffc857"
-VERMELHO = "#ff5c5c"
-TRILHO  = "#2a2e38"
+FUNDO, CARTAO, BORDA = "#15171c", "#1e2129", "#2c303b"
+TEXTO, FRACO, TRILHO = "#e8eaf0", "#848b9e", "#2a2e38"
+VERDE, AMARELO, VERMELHO, AZUL = "#3ddc84", "#ffc857", "#ff5c5c", "#4c8dff"
 
 
 def e_remoto(nome):
@@ -41,7 +42,6 @@ def sessao():
 
 
 def padroes():
-    """Dispositivos padrao do Windows. Reinicia o PortAudio para ver trocas."""
     try:
         sd._terminate()
         sd._initialize()
@@ -66,7 +66,7 @@ def padroes():
 
 
 class Audio(threading.Thread):
-    """Mede o nivel do microfone padrao numa thread propria."""
+    """Le o nivel do microfone padrao sem travar a janela."""
 
     daemon = True
 
@@ -77,8 +77,7 @@ class Audio(threading.Thread):
         self.parar = threading.Event()
 
     def run(self):
-        stream = None
-        dev_atual = object()
+        stream, dev_atual = None, object()
         while not self.parar.is_set():
             ent, sai = padroes()
             if ent[0] != dev_atual:
@@ -91,7 +90,7 @@ class Audio(threading.Thread):
                 dev_atual = ent[0]
                 if ent[0] is not None:
                     stream = self._abrir(ent[0])
-            self.saida.put((ent, sai, stream is not None))
+            self.saida.put((ent, sai))
             self.parar.wait(3.0)
         if stream:
             try:
@@ -112,78 +111,190 @@ class Audio(threading.Thread):
         return None
 
     def _cb(self, indata, frames, t, s):
-        v = float(np.abs(indata).max()) / 32768.0
-        self.pico = max(self.pico * 0.6, v)
+        self.pico = max(self.pico * 0.6, float(np.abs(indata).max()) / 32768.0)
 
 
 class Painel:
     def __init__(self, raiz):
         self.raiz = raiz
-        raiz.title("Audio do PC")
+        raiz.title("Audio remoto")
         raiz.configure(bg=FUNDO)
-        raiz.geometry("560x520")
-        raiz.minsize(480, 480)
+        raiz.geometry("560x760")
+        raiz.minsize(520, 700)
 
-        self.f_titulo = tkfont.Font(family="Segoe UI", size=17, weight="bold")
-        self.f_rotulo = tkfont.Font(family="Segoe UI", size=9, weight="bold")
-        self.f_valor  = tkfont.Font(family="Segoe UI", size=12)
-        self.f_nota   = tkfont.Font(family="Segoe UI", size=9)
-        self.f_status = tkfont.Font(family="Segoe UI", size=12, weight="bold")
+        self.f_h1   = tkfont.Font(family="Segoe UI", size=17, weight="bold")
+        self.f_rot  = tkfont.Font(family="Segoe UI", size=9, weight="bold")
+        self.f_val  = tkfont.Font(family="Segoe UI", size=11)
+        self.f_nota = tkfont.Font(family="Segoe UI", size=9)
+        self.f_bt   = tkfont.Font(family="Segoe UI", size=11, weight="bold")
+        self.f_st   = tkfont.Font(family="Segoe UI", size=11, weight="bold")
 
-        tk.Label(raiz, text="Audio do PC", bg=FUNDO, fg=TEXTO,
-                 font=self.f_titulo).pack(anchor="w", padx=24, pady=(22, 0))
-        self.lb_maquina = tk.Label(raiz, text=os.environ.get("COMPUTERNAME", ""),
-                                   bg=FUNDO, fg=FRACO, font=self.f_nota)
-        self.lb_maquina.pack(anchor="w", padx=24, pady=(2, 16))
+        self.proc = None
+        self.ent = self.sai = (None, "lendo...")
+        self.ultima_linha = ""
 
-        self.c_sessao, self.v_sessao, self.n_sessao = self._cartao("SESSAO")
+        tk.Label(raiz, text="Audio remoto", bg=FUNDO, fg=TEXTO,
+                 font=self.f_h1).pack(anchor="w", padx=22, pady=(18, 0))
+        tk.Label(raiz, text=os.environ.get("COMPUTERNAME", ""), bg=FUNDO,
+                 fg=FRACO, font=self.f_nota).pack(anchor="w", padx=22, pady=(2, 12))
+
+        # --------------------------------------------------- em casa: RDP
+        cx = self._caixa("EM CASA  -  mesma rede que o PC")
+        self.bt_rdp = tk.Button(cx, text="CONECTAR AO PC POR RDP",
+                                command=self.abrir_rdp, font=self.f_bt,
+                                bg=AZUL, fg="white", activebackground="#3b78e0",
+                                activeforeground="white", relief="flat",
+                                cursor="hand2", pady=11)
+        self.bt_rdp.pack(fill="x", padx=14, pady=(2, 4))
+        tk.Label(cx, text="leva microfone e camera junto - nao precisa de mais nada",
+                 bg=CARTAO, fg=FRACO, font=self.f_nota).pack(anchor="w", padx=14,
+                                                             pady=(0, 12))
+
+        # ------------------------------------------- fora de casa: AudioLink
+        cx2 = self._caixa("FORA DE CASA  -  quando o RDP nao alcanca")
+        linha = tk.Frame(cx2, bg=CARTAO)
+        linha.pack(fill="x", padx=14, pady=(2, 6))
+        tk.Label(linha, text="IP do PC", bg=CARTAO, fg=FRACO,
+                 font=self.f_nota).pack(side="left")
+        self.ip = tk.Entry(linha, bg=TRILHO, fg=TEXTO, insertbackground=TEXTO,
+                           relief="flat", font=self.f_val, width=16)
+        self.ip.insert(0, IP_PADRAO)
+        self.ip.pack(side="left", padx=8, ipady=3)
+
+        self.modo = tk.StringVar(value="recv" if sessao()[1] else "send")
+        for val, txt in (("send", "Enviar meu microfone   (rodar no notebook)"),
+                         ("recv", "Receber o microfone   (rodar no PC)")):
+            tk.Radiobutton(cx2, text=txt, variable=self.modo, value=val,
+                           bg=CARTAO, fg=TEXTO, selectcolor=TRILHO,
+                           activebackground=CARTAO, activeforeground=TEXTO,
+                           font=self.f_nota, anchor="w",
+                           highlightthickness=0, bd=0).pack(fill="x", padx=12)
+
+        bts = tk.Frame(cx2, bg=CARTAO)
+        bts.pack(fill="x", padx=14, pady=(8, 4))
+        self.bt_iniciar = tk.Button(bts, text="INICIAR", command=self.alternar,
+                                    font=self.f_bt, bg=VERDE, fg="#11301f",
+                                    activebackground="#35c476", relief="flat",
+                                    cursor="hand2", pady=9)
+        self.bt_iniciar.pack(side="left", fill="x", expand=True)
+        self.lb_proc = tk.Label(cx2, text="parado", bg=CARTAO, fg=FRACO,
+                                font=self.f_nota, anchor="w")
+        self.lb_proc.pack(anchor="w", padx=14, pady=(2, 12))
+
+        # ------------------------------------------------------- ao vivo
+        self.c_ses, self.v_ses, self.n_ses = self._cartao("SESSAO")
         self.c_mic, self.v_mic, self.n_mic = self._cartao("MICROFONE", barra=True)
-        self.c_saida, self.v_saida, self.n_saida = self._cartao("SAIDA")
+        self.c_sai, self.v_sai, self.n_sai = self._cartao("SAIDA")
 
         self.lb_status = tk.Label(raiz, text="lendo...", bg=FUNDO, fg=FRACO,
-                                  font=self.f_status, wraplength=500,
+                                  font=self.f_st, wraplength=500,
                                   justify="left", anchor="w")
-        self.lb_status.pack(fill="x", padx=24, pady=(6, 20))
+        self.lb_status.pack(fill="x", padx=22, pady=(6, 18))
 
         self.audio = Audio()
         self.audio.start()
-        self.ent = self.sai = (None, "lendo...")
         raiz.protocol("WM_DELETE_WINDOW", self.fechar)
         self.tick()
 
-    def _cartao(self, titulo, barra=False):
+    # ------------------------------------------------------------ layout
+    def _caixa(self, titulo):
         c = tk.Frame(self.raiz, bg=CARTAO, highlightbackground=BORDA,
                      highlightthickness=1)
-        c.pack(fill="x", padx=24, pady=5)
+        c.pack(fill="x", padx=22, pady=5)
         tk.Label(c, text=titulo, bg=CARTAO, fg=FRACO,
-                 font=self.f_rotulo).pack(anchor="w", padx=16, pady=(12, 2))
-        valor = tk.Label(c, text="-", bg=CARTAO, fg=TEXTO, font=self.f_valor,
-                         anchor="w", justify="left", wraplength=470)
-        valor.pack(anchor="w", padx=16)
+                 font=self.f_rot).pack(anchor="w", padx=14, pady=(11, 4))
+        return c
+
+    def _cartao(self, titulo, barra=False):
+        c = self._caixa(titulo)
+        valor = tk.Label(c, text="-", bg=CARTAO, fg=TEXTO, font=self.f_val,
+                         anchor="w", justify="left", wraplength=460)
+        valor.pack(anchor="w", padx=14)
         nota = tk.Label(c, text="", bg=CARTAO, fg=FRACO, font=self.f_nota,
-                        anchor="w", justify="left", wraplength=470)
-        nota.pack(anchor="w", padx=16, pady=(1, 0))
+                        anchor="w", justify="left", wraplength=460)
+        nota.pack(anchor="w", padx=14, pady=(1, 0))
         if barra:
-            self.cv = tk.Canvas(c, height=22, bg=TRILHO, highlightthickness=0)
-            self.cv.pack(fill="x", padx=16, pady=(10, 0))
-            self.lb_pct = tk.Label(c, text="0%  silencio", bg=CARTAO, fg=FRACO,
+            self.cv = tk.Canvas(c, height=20, bg=TRILHO, highlightthickness=0)
+            self.cv.pack(fill="x", padx=14, pady=(8, 0))
+            self.lb_pct = tk.Label(c, text="0%", bg=CARTAO, fg=FRACO,
                                    font=self.f_nota, anchor="w")
-            self.lb_pct.pack(anchor="w", padx=16, pady=(4, 0))
-        tk.Frame(c, bg=CARTAO, height=12).pack()
+            self.lb_pct.pack(anchor="w", padx=14, pady=(3, 0))
+        tk.Frame(c, bg=CARTAO, height=10).pack()
         return c, valor, nota
 
+    # ------------------------------------------------------------ acoes
+    def abrir_rdp(self):
+        if not os.path.exists(ARQUIVO_RDP):
+            self.lb_status.config(text="Nao achei o arquivo .rdp nesta pasta.",
+                                  fg=VERMELHO)
+            return
+        try:
+            os.startfile(ARQUIVO_RDP)
+            self.lb_status.config(text="Abrindo a conexao RDP...", fg=AZUL)
+        except Exception as e:
+            self.lb_status.config(text="Nao consegui abrir: " + str(e)[:60],
+                                  fg=VERMELHO)
+
+    def alternar(self):
+        if self.proc and self.proc.poll() is None:
+            self.parar_proc()
+        else:
+            self.iniciar_proc()
+
+    def iniciar_proc(self):
+        modo = self.modo.get()
+        cmd = [sys.executable, os.path.join(AQUI, "audiolink.py"), modo]
+        if modo == "send":
+            destino = self.ip.get().strip()
+            if not destino:
+                self.lb_proc.config(text="preencha o IP do PC", fg=VERMELHO)
+                return
+            cmd += ["--to", destino]
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            self.proc = subprocess.Popen(
+                cmd, cwd=AQUI, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, errors="replace", creationflags=flags)
+        except Exception as e:
+            self.lb_proc.config(text="nao iniciou: " + str(e)[:50], fg=VERMELHO)
+            return
+        threading.Thread(target=self._ler_saida, daemon=True).start()
+        self.bt_iniciar.config(text="PARAR", bg=VERMELHO, fg="white",
+                               activebackground="#e04b4b")
+        self.lb_proc.config(text="iniciando...", fg=VERDE)
+
+    def _ler_saida(self):
+        try:
+            for linha in self.proc.stdout:
+                linha = linha.replace("\r", "").strip()
+                if linha:
+                    self.ultima_linha = linha[:70]
+        except Exception:
+            pass
+
+    def parar_proc(self):
+        if self.proc:
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
+        self.proc = None
+        self.bt_iniciar.config(text="INICIAR", bg=VERDE, fg="#11301f",
+                               activebackground="#35c476")
+        self.lb_proc.config(text="parado", fg=FRACO)
+
+    # ------------------------------------------------------------ ciclo
     def tick(self):
         while True:
             try:
-                self.ent, self.sai, _ = self.audio.saida.get_nowait()
+                self.ent, self.sai = self.audio.saida.get_nowait()
             except queue.Empty:
                 break
 
         nome_sessao, remoto = sessao()
-        self.v_sessao.config(text=nome_sessao,
-                             fg=VERDE if remoto else AMARELO)
-        self.n_sessao.config(text="voce conectado por RDP" if remoto
-                             else "sessao local - sem RDP nao existe microfone redirecionado")
+        self.v_ses.config(text=nome_sessao, fg=VERDE if remoto else AMARELO)
+        self.n_ses.config(text="voce conectado por RDP" if remoto
+                          else "sessao local - sem RDP nao ha microfone redirecionado")
 
         mic_nome = self.ent[1]
         mic_remoto = e_remoto(mic_nome)
@@ -201,26 +312,36 @@ class Painel:
         larg = max(1, self.cv.winfo_width())
         self.cv.delete("all")
         n = int(min(1.0, pico) * larg)
-        cor = VERMELHO if pico > 0.75 else (VERDE if pico > 0.02 else TRILHO)
         if n > 0:
-            self.cv.create_rectangle(0, 0, n, 22, fill=cor, width=0)
-        pct = int(min(1.0, pico) * 100)
+            self.cv.create_rectangle(
+                0, 0, n, 20, width=0,
+                fill=VERMELHO if pico > 0.75 else (VERDE if pico > 0.02 else TRILHO))
         falando = pico > 0.02
-        self.lb_pct.config(text="{}%  {}".format(pct, "CAPTANDO" if falando else "silencio"),
-                           fg=VERDE if falando else FRACO)
+        self.lb_pct.config(
+            text="{}%  {}".format(int(min(1.0, pico) * 100),
+                                  "CAPTANDO" if falando else "silencio"),
+            fg=VERDE if falando else FRACO)
 
         sai_nome = self.sai[1]
-        self.v_saida.config(text=sai_nome)
+        self.v_sai.config(text=sai_nome)
         if e_remoto(sai_nome):
-            self.n_saida.config(text="vai para o headset do notebook", fg=VERDE)
+            self.n_sai.config(text="vai para o headset do notebook", fg=VERDE)
         elif remoto:
-            self.n_saida.config(text="toca no PC - voce nao vai ouvir", fg=AMARELO)
+            self.n_sai.config(text="toca no PC - voce nao vai ouvir", fg=AMARELO)
         else:
-            self.n_saida.config(text="dispositivo local", fg=FRACO)
+            self.n_sai.config(text="dispositivo local", fg=FRACO)
+
+        if self.proc:
+            if self.proc.poll() is None:
+                self.lb_proc.config(text=self.ultima_linha or "rodando", fg=VERDE)
+            else:
+                self.lb_proc.config(text="encerrou: " + (self.ultima_linha or "?"),
+                                    fg=AMARELO)
+                self.parar_proc()
 
         if not remoto:
-            self.lb_status.config(text="Conecte pelo RDP para o microfone aparecer.",
-                                  fg=FRACO)
+            self.lb_status.config(
+                text="Sessao local. Clique em CONECTAR AO PC POR RDP.", fg=FRACO)
         elif mic_remoto and e_remoto(sai_nome):
             self.lb_status.config(
                 text="TUDO CERTO - MicroSIP e Teams em 'Padrao' usam seu headset.",
@@ -232,12 +353,12 @@ class Painel:
         else:
             self.lb_status.config(
                 text="O padrao NAO e o audio remoto. Em Som -> Entrada, "
-                     "escolha 'Redirecionamento de Audio Remoto'.",
-                fg=VERMELHO)
+                     "escolha 'Redirecionamento de Audio Remoto'.", fg=VERMELHO)
 
         self.raiz.after(60, self.tick)
 
     def fechar(self):
+        self.parar_proc()
         self.audio.parar.set()
         self.raiz.destroy()
 
