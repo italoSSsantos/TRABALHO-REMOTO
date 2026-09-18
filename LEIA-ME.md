@@ -21,6 +21,11 @@ separação de saídas e o risco de eco — tudo de uma vez.
 - `audiomode:i:0` — o som do PC toca no seu headset
 - `camerastoredirect` — a webcam do notebook também passa, pra videochamada
 
+> **Nao coloque comentarios nesse arquivo.** O formato `.rdp` so aceita linhas
+> `chave:tipo:valor`. Qualquer linha de comentario (`;` ou `#`) faz o `mstsc` recusar
+> o arquivo inteiro com "Erro inesperado ao carregar o arquivo". Ele tambem e gravado
+> em UTF-16 LE, que e o encoding nativo do `mstsc`.
+
 No PC, o MicroSIP e o Teams passam a ver o headset do notebook como um microfone
 comum. Não precisa escolher "Mixagem estéreo" nem mexer em saída de áudio.
 
