@@ -21,7 +21,7 @@ import sounddevice as sd
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 ARQUIVO_RDP = os.path.join(AQUI, "PC DO TRABALHO (com microfone).rdp")
-IP_PADRAO = "192.168.0.244"
+IP_PADRAO = ""          # vazio = o audiolink acha o PC sozinho na rede
 
 MARCAS_REMOTO = ("remote audio", "audio remoto", "\xe1udio remoto", "rdp",
                  "redirecionamento de audio", "redirecionamento de \xe1udio")
@@ -221,7 +221,7 @@ class Painel:
                               highlightthickness=1)
         linha = tk.Frame(self.secao, bg=CARTAO)
         linha.pack(fill="x", padx=11, pady=(9, 5))
-        tk.Label(linha, text="IP do PC", bg=CARTAO, fg=FRACO,
+        tk.Label(linha, text="IP do PC (vazio = automatico)", bg=CARTAO, fg=FRACO,
                  font=self.f_nota).pack(side="left")
         self.ip = tk.Entry(linha, bg=TRILHO, fg=TEXTO, insertbackground=TEXTO,
                            relief="flat", font=self.f_val, width=15)
@@ -308,10 +308,9 @@ class Painel:
         cmd = [sys.executable, os.path.join(AQUI, "audiolink.py"), modo]
         if modo == "send":
             destino = self.ip.get().strip()
-            if not destino:
-                self.lb_proc.config(text="preencha o IP do PC", fg=VERMELHO)
-                return
-            cmd += ["--to", destino]
+            # IP vazio: o audiolink acha o PC sozinho pela rede.
+            if destino:
+                cmd += ["--to", destino]
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         try:
             self.proc = subprocess.Popen(

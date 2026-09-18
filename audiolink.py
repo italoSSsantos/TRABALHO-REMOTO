@@ -34,6 +34,8 @@ SAMPLERATE = 48000
 BLOCK = 480                       # 10 ms por pacote
 DTYPE = "int16"
 DEFAULT_PORT = 50505
+DISCOVERY_PORT = 50506           # onde o PC anuncia que esta pronto
+BEACON = b"ALHI"                 # "estou aqui, sou um PC recebendo"
 
 
 def token_of(secret):
@@ -381,9 +383,73 @@ def local_ips():
 
 # ------------------------------------------------------------------ modos
 
+
+# ------------------------------------------------------- descoberta automatica
+
+def broadcast_addrs():
+    """Enderecos de broadcast plausiveis desta maquina."""
+    addrs = ["255.255.255.255"]
+    for ip in local_ips():
+        if ip.count(".") == 3 and not ip.startswith("169.254."):
+            b = ".".join(ip.split(".")[:3] + ["255"])
+            if b not in addrs:
+                addrs.append(b)
+    return addrs
+
+
+def anunciar(token, port, parar):
+    """PC: avisa a rede que esta pronto, ate mandarem parar."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    pacote = BEACON + token + struct.pack("<I", port)
+    while not parar.is_set():
+        for alvo in broadcast_addrs():
+            try:
+                s.sendto(pacote, (alvo, DISCOVERY_PORT))
+            except Exception:
+                pass
+        parar.wait(1.0)
+    s.close()
+
+
+def procurar_pc(token, timeout=None):
+    """Notebook: escuta ate ouvir um PC. Devolve (ip, porta) ou None."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(("0.0.0.0", DISCOVERY_PORT))
+    except Exception as e:
+        s.close()
+        raise RuntimeError("Nao consegui escutar a porta de descoberta: %s" % e)
+    s.settimeout(1.0)
+    inicio = time.time()
+    try:
+        while True:
+            try:
+                dados, origem = s.recvfrom(64)
+            except socket.timeout:
+                if timeout and (time.time() - inicio) > timeout:
+                    return None
+                continue
+            if len(dados) >= 12 and dados[:4] == BEACON and dados[4:8] == token:
+                return (origem[0], struct.unpack("<I", dados[8:12])[0])
+    finally:
+        s.close()
+
+
 def cmd_send(args):
     token = token_of(args.secret)
     mic = find_device(args.mic, "input")
+
+    if args.to is None:
+        print("\nProcurando o PC na rede...", flush=True)
+        achado = procurar_pc(token)
+        if achado is None:
+            print("Nao achei nenhum PC anunciando.")
+            sys.exit(1)
+        args.to, args.port = achado
+        print("  achei: " + args.to, flush=True)
+
     peer = [(args.to, args.port)]
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -423,6 +489,15 @@ def cmd_recv(args):
         try:
             out = find_device("CABLE Input", "output")
         except RuntimeError:
+            # Sem VB-Cable: usa a saida que a Mixagem estereo escuta.
+            try:
+                out = find_device("Altofalantes", "output")
+                print("\nVB-Cable nao existe aqui. Usando o plano B:")
+                print("  saida -> " + describe(out))
+                print("  No Teams/MicroSIP escolha 'Mixagem estereo' como MICROFONE.")
+            except RuntimeError:
+                out = None
+        if out is None:
             print("\nVB-Cable nao encontrado nesta maquina.\n")
             print("Sem admin nao da pra instalar driver, mas existe o plano B:")
             print("a 'Mixagem estereo' (Stereo Mix), que a maioria das placas")
@@ -443,6 +518,11 @@ def cmd_recv(args):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(0.5)
     sock.bind(("0.0.0.0", args.port))
+
+    # Anuncia na rede para o notebook achar sozinho, sem digitar IP.
+    parar_anuncio = threading.Event()
+    threading.Thread(target=anunciar, args=(token, args.port, parar_anuncio),
+                     daemon=True).start()
 
     stats = new_stats()
     peer = [None]
@@ -660,7 +740,7 @@ def main():
                         help="tambem trazer o audio do outro lado de volta")
 
     s = sub.add_parser("send", parents=[common], help="NOTEBOOK: envia o microfone")
-    s.add_argument("--to", required=True, help="IP do PC que vai receber")
+    s.add_argument("--to", help="IP do PC (se omitir, acha sozinho na rede)")
     s.add_argument("--mic", help="indice ou trecho do nome do microfone")
     s.add_argument("--speaker", help="saida para o retorno, se usar --duplex")
 
