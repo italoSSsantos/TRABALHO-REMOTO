@@ -1,0 +1,9 @@
+# configuracao local de cada maquina
+ip_do_pc.txt
+
+# Python
+__pycache__/
+*.py[cod]
+
+# backups
+*.bak
