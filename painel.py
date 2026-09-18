@@ -2,7 +2,7 @@
 """
 Painel de controle do audio remoto.
 
-Mostra ao vivo se o microfone chegou, e tem os botoes para ligar tudo:
+Mostra ao vivo se o microfone chegou e tem os botoes para ligar tudo:
 conectar por RDP (em casa) ou subir o AudioLink (fora de casa).
 
     python painel.py
@@ -114,82 +114,138 @@ class Audio(threading.Thread):
         self.pico = max(self.pico * 0.6, float(np.abs(indata).max()) / 32768.0)
 
 
+class Rolavel(tk.Frame):
+    """Area com rolagem: a janela pode ficar menor que o conteudo."""
+
+    def __init__(self, pai, bg):
+        super().__init__(pai, bg=bg)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.barra = tk.Scrollbar(self, orient="vertical",
+                                  command=self.canvas.yview, width=11)
+        self.canvas.configure(yscrollcommand=self._scroll_set)
+        # grid, e nao pack: grid_remove() esconde a barra sem perder o lugar dela
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.barra.grid(row=0, column=1, sticky="ns")
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self.interno = tk.Frame(self.canvas, bg=bg)
+        self.janela = self.canvas.create_window((0, 0), window=self.interno,
+                                                anchor="nw")
+        self.interno.bind("<Configure>", self._conteudo_mudou)
+        self.canvas.bind("<Configure>", self._canvas_mudou)
+        self.canvas.bind_all("<MouseWheel>", self._roda)
+
+    def _scroll_set(self, primeiro, ultimo):
+        # so mostra a barra quando ha o que rolar
+        if float(primeiro) <= 0.0 and float(ultimo) >= 1.0:
+            self.barra.grid_remove()
+        else:
+            self.barra.grid()
+        self.barra.set(primeiro, ultimo)
+
+    def _conteudo_mudou(self, _):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _canvas_mudou(self, e):
+        self.canvas.itemconfigure(self.janela, width=e.width)
+        # encolher so o canvas nao mexe no conteudo, entao o scrollregion
+        # precisa ser refeito aqui - senao a barra nunca aparece
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _roda(self, e):
+        if self.canvas.winfo_exists():
+            self.canvas.yview_scroll(int(-e.delta / 120), "units")
+
+
 class Painel:
     def __init__(self, raiz):
         self.raiz = raiz
         raiz.title("Audio remoto")
         raiz.configure(bg=FUNDO)
-        raiz.geometry("560x760")
-        raiz.minsize(520, 700)
+        raiz.geometry("400x520")
+        raiz.minsize(300, 200)          # da para encolher bem; o scroll cobre
 
-        self.f_h1   = tkfont.Font(family="Segoe UI", size=17, weight="bold")
-        self.f_rot  = tkfont.Font(family="Segoe UI", size=9, weight="bold")
-        self.f_val  = tkfont.Font(family="Segoe UI", size=11)
-        self.f_nota = tkfont.Font(family="Segoe UI", size=9)
-        self.f_bt   = tkfont.Font(family="Segoe UI", size=11, weight="bold")
-        self.f_st   = tkfont.Font(family="Segoe UI", size=11, weight="bold")
+        self.f_h1   = tkfont.Font(family="Segoe UI", size=13, weight="bold")
+        self.f_rot  = tkfont.Font(family="Segoe UI", size=8, weight="bold")
+        self.f_val  = tkfont.Font(family="Segoe UI", size=10)
+        self.f_nota = tkfont.Font(family="Segoe UI", size=8)
+        self.f_bt   = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+        self.f_st   = tkfont.Font(family="Segoe UI", size=9, weight="bold")
 
         self.proc = None
         self.ent = self.sai = (None, "lendo...")
         self.ultima_linha = ""
 
-        tk.Label(raiz, text="Audio remoto", bg=FUNDO, fg=TEXTO,
-                 font=self.f_h1).pack(anchor="w", padx=22, pady=(18, 0))
-        tk.Label(raiz, text=os.environ.get("COMPUTERNAME", ""), bg=FUNDO,
-                 fg=FRACO, font=self.f_nota).pack(anchor="w", padx=22, pady=(2, 12))
+        rol = Rolavel(raiz, FUNDO)
+        rol.pack(fill="both", expand=True)
+        self.area = rol.interno
 
-        # --------------------------------------------------- em casa: RDP
-        cx = self._caixa("EM CASA  -  mesma rede que o PC")
-        self.bt_rdp = tk.Button(cx, text="CONECTAR AO PC POR RDP",
+        topo = tk.Frame(self.area, bg=FUNDO)
+        topo.pack(fill="x", padx=14, pady=(12, 8))
+        tk.Label(topo, text="Audio remoto", bg=FUNDO, fg=TEXTO,
+                 font=self.f_h1).pack(side="left")
+        tk.Label(topo, text=os.environ.get("COMPUTERNAME", ""), bg=FUNDO,
+                 fg=FRACO, font=self.f_nota).pack(side="right", pady=(4, 0))
+
+        # ------------------------------------------------ acao principal
+        self.bt_rdp = tk.Button(self.area, text="CONECTAR AO PC POR RDP",
                                 command=self.abrir_rdp, font=self.f_bt,
                                 bg=AZUL, fg="white", activebackground="#3b78e0",
                                 activeforeground="white", relief="flat",
-                                cursor="hand2", pady=11)
-        self.bt_rdp.pack(fill="x", padx=14, pady=(2, 4))
-        tk.Label(cx, text="leva microfone e camera junto - nao precisa de mais nada",
-                 bg=CARTAO, fg=FRACO, font=self.f_nota).pack(anchor="w", padx=14,
-                                                             pady=(0, 12))
+                                cursor="hand2", pady=9)
+        self.bt_rdp.pack(fill="x", padx=14)
+        tk.Label(self.area, text="leva microfone e camera junto", bg=FUNDO,
+                 fg=FRACO, font=self.f_nota).pack(anchor="w", padx=14, pady=(3, 8))
 
-        # ------------------------------------------- fora de casa: AudioLink
-        cx2 = self._caixa("FORA DE CASA  -  quando o RDP nao alcanca")
-        linha = tk.Frame(cx2, bg=CARTAO)
-        linha.pack(fill="x", padx=14, pady=(2, 6))
+        # ------------------------------------------------------ ao vivo
+        self.v_ses, self.n_ses = self._cartao("SESSAO")
+        self.v_mic, self.n_mic = self._cartao("MICROFONE", barra=True)
+        self.v_sai, self.n_sai = self._cartao("SAIDA")
+
+        self.lb_status = tk.Label(self.area, text="lendo...", bg=FUNDO, fg=FRACO,
+                                  font=self.f_st, wraplength=340,
+                                  justify="left", anchor="w")
+        self.lb_status.pack(fill="x", padx=14, pady=(6, 10))
+
+        # -------------------------- fora de casa: recolhido por ser plano B
+        self.aberto = tk.BooleanVar(value=False)
+        self.bt_exp = tk.Button(self.area, text="▸  Fora de casa (AudioLink)",
+                                command=self.alterna_secao, font=self.f_nota,
+                                bg=FUNDO, fg=FRACO, activebackground=FUNDO,
+                                activeforeground=TEXTO, relief="flat",
+                                cursor="hand2", anchor="w", bd=0, pady=4)
+        self.bt_exp.pack(fill="x", padx=12)
+
+        self.secao = tk.Frame(self.area, bg=CARTAO, highlightbackground=BORDA,
+                              highlightthickness=1)
+        linha = tk.Frame(self.secao, bg=CARTAO)
+        linha.pack(fill="x", padx=11, pady=(9, 5))
         tk.Label(linha, text="IP do PC", bg=CARTAO, fg=FRACO,
                  font=self.f_nota).pack(side="left")
         self.ip = tk.Entry(linha, bg=TRILHO, fg=TEXTO, insertbackground=TEXTO,
-                           relief="flat", font=self.f_val, width=16)
+                           relief="flat", font=self.f_val, width=15)
         self.ip.insert(0, IP_PADRAO)
-        self.ip.pack(side="left", padx=8, ipady=3)
+        self.ip.pack(side="left", padx=7, ipady=2)
 
         self.modo = tk.StringVar(value="recv" if sessao()[1] else "send")
-        for val, txt in (("send", "Enviar meu microfone   (rodar no notebook)"),
-                         ("recv", "Receber o microfone   (rodar no PC)")):
-            tk.Radiobutton(cx2, text=txt, variable=self.modo, value=val,
+        for val, txt in (("send", "Enviar microfone (notebook)"),
+                         ("recv", "Receber microfone (PC)")):
+            tk.Radiobutton(self.secao, text=txt, variable=self.modo, value=val,
                            bg=CARTAO, fg=TEXTO, selectcolor=TRILHO,
                            activebackground=CARTAO, activeforeground=TEXTO,
                            font=self.f_nota, anchor="w",
-                           highlightthickness=0, bd=0).pack(fill="x", padx=12)
+                           highlightthickness=0, bd=0).pack(fill="x", padx=9)
 
-        bts = tk.Frame(cx2, bg=CARTAO)
-        bts.pack(fill="x", padx=14, pady=(8, 4))
-        self.bt_iniciar = tk.Button(bts, text="INICIAR", command=self.alternar,
+        self.bt_iniciar = tk.Button(self.secao, text="INICIAR", command=self.alternar,
                                     font=self.f_bt, bg=VERDE, fg="#11301f",
                                     activebackground="#35c476", relief="flat",
-                                    cursor="hand2", pady=9)
-        self.bt_iniciar.pack(side="left", fill="x", expand=True)
-        self.lb_proc = tk.Label(cx2, text="parado", bg=CARTAO, fg=FRACO,
-                                font=self.f_nota, anchor="w")
-        self.lb_proc.pack(anchor="w", padx=14, pady=(2, 12))
-
-        # ------------------------------------------------------- ao vivo
-        self.c_ses, self.v_ses, self.n_ses = self._cartao("SESSAO")
-        self.c_mic, self.v_mic, self.n_mic = self._cartao("MICROFONE", barra=True)
-        self.c_sai, self.v_sai, self.n_sai = self._cartao("SAIDA")
-
-        self.lb_status = tk.Label(raiz, text="lendo...", bg=FUNDO, fg=FRACO,
-                                  font=self.f_st, wraplength=500,
-                                  justify="left", anchor="w")
-        self.lb_status.pack(fill="x", padx=22, pady=(6, 18))
+                                    cursor="hand2", pady=7)
+        self.bt_iniciar.pack(fill="x", padx=11, pady=(7, 3))
+        self.lb_proc = tk.Label(self.secao, text="parado", bg=CARTAO, fg=FRACO,
+                                font=self.f_nota, anchor="w", wraplength=330,
+                                justify="left")
+        self.lb_proc.pack(anchor="w", padx=11, pady=(0, 9))
 
         self.audio = Audio()
         self.audio.start()
@@ -197,30 +253,36 @@ class Painel:
         self.tick()
 
     # ------------------------------------------------------------ layout
-    def _caixa(self, titulo):
-        c = tk.Frame(self.raiz, bg=CARTAO, highlightbackground=BORDA,
-                     highlightthickness=1)
-        c.pack(fill="x", padx=22, pady=5)
-        tk.Label(c, text=titulo, bg=CARTAO, fg=FRACO,
-                 font=self.f_rot).pack(anchor="w", padx=14, pady=(11, 4))
-        return c
-
     def _cartao(self, titulo, barra=False):
-        c = self._caixa(titulo)
+        c = tk.Frame(self.area, bg=CARTAO, highlightbackground=BORDA,
+                     highlightthickness=1)
+        c.pack(fill="x", padx=14, pady=3)
+        tk.Label(c, text=titulo, bg=CARTAO, fg=FRACO,
+                 font=self.f_rot).pack(anchor="w", padx=11, pady=(7, 1))
         valor = tk.Label(c, text="-", bg=CARTAO, fg=TEXTO, font=self.f_val,
-                         anchor="w", justify="left", wraplength=460)
-        valor.pack(anchor="w", padx=14)
+                         anchor="w", justify="left", wraplength=320)
+        valor.pack(anchor="w", padx=11)
         nota = tk.Label(c, text="", bg=CARTAO, fg=FRACO, font=self.f_nota,
-                        anchor="w", justify="left", wraplength=460)
-        nota.pack(anchor="w", padx=14, pady=(1, 0))
+                        anchor="w", justify="left", wraplength=320)
+        nota.pack(anchor="w", padx=11)
         if barra:
-            self.cv = tk.Canvas(c, height=20, bg=TRILHO, highlightthickness=0)
-            self.cv.pack(fill="x", padx=14, pady=(8, 0))
+            self.cv = tk.Canvas(c, height=16, bg=TRILHO, highlightthickness=0)
+            self.cv.pack(fill="x", padx=11, pady=(6, 0))
             self.lb_pct = tk.Label(c, text="0%", bg=CARTAO, fg=FRACO,
                                    font=self.f_nota, anchor="w")
-            self.lb_pct.pack(anchor="w", padx=14, pady=(3, 0))
-        tk.Frame(c, bg=CARTAO, height=10).pack()
-        return c, valor, nota
+            self.lb_pct.pack(anchor="w", padx=11)
+        tk.Frame(c, bg=CARTAO, height=7).pack()
+        return valor, nota
+
+    def alterna_secao(self):
+        if self.aberto.get():
+            self.secao.pack_forget()
+            self.bt_exp.config(text="▸  Fora de casa (AudioLink)")
+            self.aberto.set(False)
+        else:
+            self.secao.pack(fill="x", padx=14, pady=(0, 12))
+            self.bt_exp.config(text="▾  Fora de casa (AudioLink)")
+            self.aberto.set(True)
 
     # ------------------------------------------------------------ acoes
     def abrir_rdp(self):
@@ -268,7 +330,7 @@ class Painel:
             for linha in self.proc.stdout:
                 linha = linha.replace("\r", "").strip()
                 if linha:
-                    self.ultima_linha = linha[:70]
+                    self.ultima_linha = linha[:60]
         except Exception:
             pass
 
@@ -293,8 +355,8 @@ class Painel:
 
         nome_sessao, remoto = sessao()
         self.v_ses.config(text=nome_sessao, fg=VERDE if remoto else AMARELO)
-        self.n_ses.config(text="voce conectado por RDP" if remoto
-                          else "sessao local - sem RDP nao ha microfone redirecionado")
+        self.n_ses.config(text="conectado por RDP" if remoto
+                          else "sessao local - sem microfone redirecionado")
 
         mic_nome = self.ent[1]
         mic_remoto = e_remoto(mic_nome)
@@ -302,8 +364,7 @@ class Painel:
         if mic_remoto:
             self.n_mic.config(text="vem do headset do notebook", fg=VERDE)
         elif remoto:
-            self.n_mic.config(text="dispositivo local do PC - nao e o seu headset",
-                              fg=VERMELHO)
+            self.n_mic.config(text="local do PC - nao e o seu headset", fg=VERMELHO)
         else:
             self.n_mic.config(text="dispositivo local", fg=FRACO)
 
@@ -314,7 +375,7 @@ class Painel:
         n = int(min(1.0, pico) * larg)
         if n > 0:
             self.cv.create_rectangle(
-                0, 0, n, 20, width=0,
+                0, 0, n, 16, width=0,
                 fill=VERMELHO if pico > 0.75 else (VERDE if pico > 0.02 else TRILHO))
         falando = pico > 0.02
         self.lb_pct.config(
@@ -340,19 +401,17 @@ class Painel:
                 self.parar_proc()
 
         if not remoto:
-            self.lb_status.config(
-                text="Sessao local. Clique em CONECTAR AO PC POR RDP.", fg=FRACO)
+            self.lb_status.config(text="Sessao local. Clique em conectar por RDP.",
+                                  fg=FRACO)
         elif mic_remoto and e_remoto(sai_nome):
-            self.lb_status.config(
-                text="TUDO CERTO - MicroSIP e Teams em 'Padrao' usam seu headset.",
-                fg=VERDE)
+            self.lb_status.config(text="TUDO CERTO - MicroSIP e Teams usam seu headset.",
+                                  fg=VERDE)
         elif mic_remoto:
-            self.lb_status.config(
-                text="Microfone OK, mas o som do PC nao esta vindo para voce.",
-                fg=AMARELO)
+            self.lb_status.config(text="Microfone OK, mas o som do PC nao vem para voce.",
+                                  fg=AMARELO)
         else:
             self.lb_status.config(
-                text="O padrao NAO e o audio remoto. Em Som -> Entrada, "
+                text="O padrao nao e o audio remoto. Som -> Entrada: "
                      "escolha 'Redirecionamento de Audio Remoto'.", fg=VERMELHO)
 
         self.raiz.after(60, self.tick)
