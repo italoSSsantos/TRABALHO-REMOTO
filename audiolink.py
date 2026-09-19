@@ -489,12 +489,17 @@ def cmd_recv(args):
         try:
             out = find_device("CABLE Input", "output")
         except RuntimeError:
-            # Sem VB-Cable: usa a saida que a Mixagem estereo escuta.
+            # Sem VB-Cable: toca na saida padrao do Windows, que e a que a
+            # Mixagem estereo escuta. Procurar pelo nome nao serve: o mesmo
+            # alto-falante aparece como "Altofalantes" numa maquina e
+            # "Alto-falantes (2- ...)" em outra, e muda com o idioma.
             try:
-                out = find_device("Altofalantes", "output")
+                out = find_device(None, "output")
                 print("\nVB-Cable nao existe aqui. Usando o plano B:")
                 print("  saida -> " + describe(out))
                 print("  No Teams/MicroSIP escolha 'Mixagem estereo' como MICROFONE.")
+                print("  Confirme com 'python audiolink.py checar' que a Mixagem")
+                print("  estereo escuta esta saida, senao voce fala e ninguem ouve.")
             except RuntimeError:
                 out = None
         if out is None:
