@@ -36,6 +36,7 @@ DTYPE = "int16"
 DEFAULT_PORT = 50505
 DISCOVERY_PORT = 50506           # onde o PC anuncia que esta pronto
 BEACON = b"ALHI"                 # "estou aqui, sou um PC recebendo"
+ACK = b"ALOK"                    # "estou recebendo o seu audio"
 
 
 def token_of(secret):
@@ -260,6 +261,7 @@ class Receiver:
         self.running = True
         self.last_seq = None
         self.warned_rate = False
+        self.ultimo_ack = 0.0
 
     def _callback(self, outdata, frames, time_info, status):
         block = self.jb.pop()
@@ -301,6 +303,17 @@ class Receiver:
             block = np.frombuffer(data, dtype=np.int16, offset=HEADER.size).copy()
             self.jb.push(block)
             self.stats["rx"] += 1
+            # avisa quem mandou que o audio chegou: sem isso o outro lado
+            # so sabe que enviou, nunca que alguem recebeu
+            agora = time.time()
+            if agora - self.ultimo_ack > 1.0:
+                self.ultimo_ack = agora
+                nivel = int(np.abs(block).max())
+                try:
+                    self.sock.sendto(
+                        ACK + self.token + struct.pack("<I", nivel), addr)
+                except OSError:
+                    pass
 
     def start(self):
         info = sd.query_devices(self.device)
@@ -352,6 +365,14 @@ def monitor(stats, receiver, label):
 
         if label == "send":
             parts.append("mic [{}]  enviados {}/s".format(bar, tx))
+            idade = time.time() - stats["ack"]
+            if stats["ack"] == 0.0:
+                parts.append("PC NAO CONFIRMOU")
+            elif idade < 3.0:
+                parts.append("PC RECEBENDO ({:.0f}%)".format(
+                    stats["ack_nivel"] / 32768.0 * 100))
+            else:
+                parts.append("PC PAROU DE CONFIRMAR")
         else:
             depth = receiver.jb.depth() if receiver else 0
             parts.append("recebidos {}/s  buffer {:3d}ms".format(rx, depth * 10))
@@ -366,7 +387,8 @@ def monitor(stats, receiver, label):
 
 
 def new_stats():
-    return {"tx": 0, "rx": 0, "lost": 0, "rejected": 0, "level": 0.0}
+    return {"tx": 0, "rx": 0, "lost": 0, "rejected": 0, "level": 0.0,
+            "ack": 0.0, "ack_nivel": 0}
 
 
 def local_ips():
@@ -437,6 +459,20 @@ def procurar_pc(token, timeout=None):
         s.close()
 
 
+def escutar_ack(sock, token, stats, parar):
+    """Le as confirmacoes do PC: e o que diz se o audio chegou de verdade."""
+    while not parar.is_set():
+        try:
+            dados, _ = sock.recvfrom(2048)
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+        if len(dados) >= 12 and dados[:4] == ACK and dados[4:8] == token:
+            stats["ack"] = time.time()
+            stats["ack_nivel"] = struct.unpack("<I", dados[8:12])[0]
+
+
 def cmd_send(args):
     token = token_of(args.secret)
     mic = find_device(args.mic, "input")
@@ -463,6 +499,12 @@ def cmd_send(args):
     sender = Sender(sock, mic, peer, token, stats)
     sender.start()
 
+    parar_ack = threading.Event()
+    if not args.duplex:
+        threading.Thread(target=escutar_ack,
+                         args=(sock, token, stats, parar_ack),
+                         daemon=True).start()
+
     receiver = None
     if args.duplex:
         spk = find_device(args.speaker, "output")
@@ -476,6 +518,7 @@ def cmd_send(args):
     except KeyboardInterrupt:
         print("\n\n  parando...")
     finally:
+        parar_ack.set()
         sender.stop()
         if receiver:
             receiver.stop()
